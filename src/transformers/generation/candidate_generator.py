@@ -30,7 +30,9 @@ if TYPE_CHECKING:
 class CandidateGenerator:
     """Abstract base class for all candidate generators that can be applied during assisted generation."""
 
-    def get_candidates(self, input_ids: torch.LongTensor) -> Tuple[torch.LongTensor, Optional[torch.FloatTensor]]:
+    def get_candidates(
+        self, input_ids: torch.LongTensor
+    ) -> Tuple[torch.LongTensor, Optional[torch.FloatTensor]]:
         """
         Fetches the candidates to be tried for the current input.
 
@@ -47,7 +49,9 @@ class CandidateGenerator:
             f"{self.__class__} is an abstract class. Only classes inheriting this class can call `get_candidates`."
         )
 
-    def update_candidate_strategy(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, num_matches: int):
+    def update_candidate_strategy(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, num_matches: int
+    ):
         """
         Updates the candidate generation strategy based on the outcomes.
 
@@ -106,27 +110,46 @@ class AssistedCandidateGenerator(CandidateGenerator):
 
         # Prepare the assistant and the starting number of candidate tokens
         self.assistant_model = assistant_model
-        self.num_assistant_tokens = assistant_model.generation_config.num_assistant_tokens
+        self.num_assistant_tokens = (
+            assistant_model.generation_config.num_assistant_tokens
+        )
 
         # Prepare the kwargs for the assistant model
         assistant_kwargs = {}
-        for key, value in model_kwargs.items():  # deepcopy crashes if we attempt to copy encoder outputs with grads
+        for (
+            key,
+            value,
+        ) in (
+            model_kwargs.items()
+        ):  # deepcopy crashes if we attempt to copy encoder outputs with grads
             if key not in ("encoder_outputs", "assistant_encoder_outputs"):
                 assistant_kwargs[key] = (
-                    value.detach().to(device) if isinstance(value, torch.Tensor) else copy.deepcopy(value)
+                    value.detach().to(device)
+                    if isinstance(value, torch.Tensor)
+                    else copy.deepcopy(value)
                 )
 
         if "assistant_encoder_outputs" in model_kwargs:
-            assistant_kwargs["encoder_outputs"] = model_kwargs["assistant_encoder_outputs"]
-        elif assistant_model.config.is_encoder_decoder:
-            inputs_tensor, model_input_name, assistant_kwargs = assistant_model._prepare_model_inputs(
-                inputs_tensor, assistant_model.generation_config.bos_token_id, assistant_kwargs
-            )
-            assistant_kwargs = assistant_model._prepare_encoder_decoder_kwargs_for_generation(
-                inputs_tensor, assistant_kwargs, model_input_name
-            )
+            assistant_kwargs["encoder_outputs"] = model_kwargs[
+                "assistant_encoder_outputs"
+            ]
         elif "encoder_outputs" in model_kwargs:
             assistant_kwargs["encoder_outputs"] = model_kwargs["encoder_outputs"]
+        elif assistant_model.config.is_encoder_decoder:
+            (
+                inputs_tensor,
+                model_input_name,
+                assistant_kwargs,
+            ) = assistant_model._prepare_model_inputs(
+                inputs_tensor,
+                assistant_model.generation_config.bos_token_id,
+                assistant_kwargs,
+            )
+            assistant_kwargs = (
+                assistant_model._prepare_encoder_decoder_kwargs_for_generation(
+                    inputs_tensor, assistant_kwargs, model_input_name
+                )
+            )
         self.assistant_kwargs = assistant_kwargs
 
         # Prepare assistant model's keys of inputs
@@ -138,7 +161,9 @@ class AssistedCandidateGenerator(CandidateGenerator):
             self.input_ids_key = "input_ids"
             self.assistant_kwargs["attention_mask"] = self.assistant_kwargs.get(
                 "decoder_attention_mask",
-                torch.ones((input_ids.shape[0], 1), device=input_ids.device, dtype=torch.long),
+                torch.ones(
+                    (input_ids.shape[0], 1), device=input_ids.device, dtype=torch.long
+                ),
             )
         else:
             # both are decoder-only
@@ -155,7 +180,9 @@ class AssistedCandidateGenerator(CandidateGenerator):
         self.generation_config.min_length = 0
         self.generation_config.min_new_tokens = None
 
-    def get_candidates(self, input_ids: torch.LongTensor) -> Tuple[torch.LongTensor, Optional[torch.FloatTensor]]:
+    def get_candidates(
+        self, input_ids: torch.LongTensor
+    ) -> Tuple[torch.LongTensor, Optional[torch.FloatTensor]]:
         """
         Fetches the candidates to be tried for the current input.
 
@@ -172,24 +199,37 @@ class AssistedCandidateGenerator(CandidateGenerator):
 
         # Don't generate more than `max_length - 1` candidates since the target model generates one extra token.
         new_cur_len = input_ids.shape[-1]
-        max_new_tokens = min(int(self.num_assistant_tokens), self.generation_config.max_length - new_cur_len - 1)
-        min_new_tokens = max(min(max_new_tokens, self.main_model_min_length - new_cur_len), 0)
+        max_new_tokens = min(
+            int(self.num_assistant_tokens),
+            self.generation_config.max_length - new_cur_len - 1,
+        )
+        min_new_tokens = max(
+            min(max_new_tokens, self.main_model_min_length - new_cur_len), 0
+        )
         if max_new_tokens == 0:
             return input_ids, None
 
         # 1. If it is not the first round of candidate generation, prepare the inputs based on the input_ids length
         # (which implicitly contains the number of accepted candidates from the previous round)
-        has_past_key_values = self.assistant_kwargs.get("past_key_values", None) is not None
+        has_past_key_values = (
+            self.assistant_kwargs.get("past_key_values", None) is not None
+        )
         if has_past_key_values:
             new_cache_size = new_cur_len - 1
             self.assistant_kwargs["past_key_values"] = _crop_past_key_values(
-                self.assistant_model, self.assistant_kwargs["past_key_values"], new_cache_size - 1
+                self.assistant_model,
+                self.assistant_kwargs["past_key_values"],
+                new_cache_size - 1,
             )  # the assistant does not have the token after the last match, hence the -1
 
             self.assistant_kwargs = _prepare_attention_mask(
-                self.assistant_kwargs, new_cur_len, self.assistant_model.config.is_encoder_decoder
+                self.assistant_kwargs,
+                new_cur_len,
+                self.assistant_model.config.is_encoder_decoder,
             )
-            self.assistant_kwargs = _prepare_token_type_ids(self.assistant_kwargs, new_cur_len)
+            self.assistant_kwargs = _prepare_token_type_ids(
+                self.assistant_kwargs, new_cur_len
+            )
 
         # 2. Forecast next N tokens using the assistant model.
         assistant_generation_kwargs = {
@@ -200,7 +240,9 @@ class AssistedCandidateGenerator(CandidateGenerator):
             "logits_processor": self.logits_processor,
         }
 
-        assistant_output = self.assistant_model.generate(**assistant_generation_kwargs, **self.assistant_kwargs)
+        assistant_output = self.assistant_model.generate(
+            **assistant_generation_kwargs, **self.assistant_kwargs
+        )
 
         # 3. Update variables for the next round of candidate generation
         self.assistant_kwargs["past_key_values"] = assistant_output.past_key_values
@@ -210,7 +252,9 @@ class AssistedCandidateGenerator(CandidateGenerator):
         candidate_ids = assistant_output.sequences
         return candidate_ids, candidate_logits
 
-    def update_candidate_strategy(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, num_matches: int):
+    def update_candidate_strategy(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, num_matches: int
+    ):
         """
         Updates the candidate generation strategy based on the outcomes.
 
@@ -259,13 +303,17 @@ class PromptLookupCandidateGenerator(CandidateGenerator):
         max_length: int = 20,
     ):
         self.num_output_tokens = num_output_tokens
-        self.max_matching_ngram_size = max_matching_ngram_size if max_matching_ngram_size else 2
+        self.max_matching_ngram_size = (
+            max_matching_ngram_size if max_matching_ngram_size else 2
+        )
         self.max_length = max_length
 
         if self.max_matching_ngram_size <= 0 or self.num_output_tokens <= 0:
             raise ValueError("Invalid max_matching_ngram_size or num_output_tokens")
 
-    def get_candidates(self, input_ids: torch.LongTensor) -> Tuple[torch.LongTensor, Optional[torch.FloatTensor]]:
+    def get_candidates(
+        self, input_ids: torch.LongTensor
+    ) -> Tuple[torch.LongTensor, Optional[torch.FloatTensor]]:
         """
         Fetches the candidates to be tried for the current input.
 
@@ -284,7 +332,9 @@ class PromptLookupCandidateGenerator(CandidateGenerator):
 
         chosen_ids = None
         match_found = False
-        for ngram_size in range(min(self.max_matching_ngram_size, input_length - 1), 0, -1):
+        for ngram_size in range(
+            min(self.max_matching_ngram_size, input_length - 1), 0, -1
+        ):
             # Create sliding windows of size ngram_size
             windows = input_ids.unfold(dimension=1, size=ngram_size, step=1)
 
@@ -320,7 +370,9 @@ class PromptLookupCandidateGenerator(CandidateGenerator):
         # assisted_generation expects logits as well, but we don't have those here, so returning None
         return candidate_input_ids, None
 
-    def update_candidate_strategy(self, input_ids: torch.LongTensor, scores: torch.FloatTensor, num_matches: int):
+    def update_candidate_strategy(
+        self, input_ids: torch.LongTensor, scores: torch.FloatTensor, num_matches: int
+    ):
         """
         Updates the candidate generation strategy based on the outcomes.
 
@@ -353,7 +405,8 @@ def _crop_past_key_values(model, past_key_values, maximum_length):
         past_key_values = tuple(new_past)
     # bloom is special
     elif "bloom" in model.__class__.__name__.lower() or (
-        model.config.architectures is not None and "bloom" in model.config.architectures[0].lower()
+        model.config.architectures is not None
+        and "bloom" in model.config.architectures[0].lower()
     ):
         for idx in range(len(past_key_values)):
             new_past.append(
@@ -365,7 +418,8 @@ def _crop_past_key_values(model, past_key_values, maximum_length):
         past_key_values = tuple(new_past)
     # gptbigcode is too
     elif "gptbigcode" in model.__class__.__name__.lower() or (
-        model.config.architectures is not None and "gptbigcode" in model.config.architectures[0].lower()
+        model.config.architectures is not None
+        and "gptbigcode" in model.config.architectures[0].lower()
     ):
         if model.config.multi_query:
             for idx in range(len(past_key_values)):
@@ -376,8 +430,12 @@ def _crop_past_key_values(model, past_key_values, maximum_length):
     elif isinstance(past_key_values, DynamicCache):
         for idx in range(len(past_key_values.key_cache)):
             if past_key_values.value_cache[idx].shape[-1] != 0:
-                past_key_values.key_cache[idx] = past_key_values.key_cache[idx][:, :, :maximum_length, :]
-                past_key_values.value_cache[idx] = past_key_values.value_cache[idx][:, :, :maximum_length, :]
+                past_key_values.key_cache[idx] = past_key_values.key_cache[idx][
+                    :, :, :maximum_length, :
+                ]
+                past_key_values.value_cache[idx] = past_key_values.value_cache[idx][
+                    :, :, :maximum_length, :
+                ]
 
     elif past_key_values is not None:
         for idx in range(len(past_key_values)):
@@ -391,7 +449,9 @@ def _crop_past_key_values(model, past_key_values, maximum_length):
     return past_key_values
 
 
-def _prepare_attention_mask(model_kwargs: Dict[str, Any], new_length: int, is_encoder_decoder: bool) -> Dict[str, Any]:
+def _prepare_attention_mask(
+    model_kwargs: Dict[str, Any], new_length: int, is_encoder_decoder: bool
+) -> Dict[str, Any]:
     """Expands or crops the model's mask for decoding purposes, to the defined length"""
 
     mask_key = "decoder_attention_mask" if is_encoder_decoder else "attention_mask"
@@ -404,11 +464,15 @@ def _prepare_attention_mask(model_kwargs: Dict[str, Any], new_length: int, is_en
     if mask_length_diff < 0:
         model_kwargs[mask_key] = mask[:, :mask_length_diff]
     elif mask_length_diff > 0:
-        model_kwargs[mask_key] = torch.cat([mask, mask.new_ones((mask.shape[0], mask_length_diff))], dim=-1)
+        model_kwargs[mask_key] = torch.cat(
+            [mask, mask.new_ones((mask.shape[0], mask_length_diff))], dim=-1
+        )
     return model_kwargs
 
 
-def _prepare_token_type_ids(model_kwargs: Dict[str, Any], new_length: int) -> Dict[str, Any]:
+def _prepare_token_type_ids(
+    model_kwargs: Dict[str, Any], new_length: int
+) -> Dict[str, Any]:
     """Expands or crops the model's token_type_ids for decoding purposes, to the defined length"""
     if "token_type_ids" not in model_kwargs or model_kwargs["token_type_ids"] is None:
         return model_kwargs
@@ -421,5 +485,7 @@ def _prepare_token_type_ids(model_kwargs: Dict[str, Any], new_length: int) -> Di
         token_type_ids = token_type_ids[:, :type_length_diff]
     elif type_length_diff > 0:
         token_type_copies = final_token_type.repeat(1, type_length_diff)
-        model_kwargs["token_type_ids"] = torch.cat([model_kwargs["token_type_ids"], token_type_copies], dim=-1)
+        model_kwargs["token_type_ids"] = torch.cat(
+            [model_kwargs["token_type_ids"], token_type_copies], dim=-1
+        )
     return model_kwargs
